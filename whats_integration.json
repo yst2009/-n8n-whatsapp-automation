@@ -1,0 +1,785 @@
+{
+  "name": "WhatsApp Translation Service - Botify",
+  "description": "استقبال PDF → فولدر تلقائي → تحقق دفع → إرسال نتيجة",
+  "nodes": [
+    {
+      "displayName": "WhatsApp Trigger - استقبال الرسائل",
+      "name": "whatsappTrigger",
+      "type": "n8n-nodes-base.whatsappTrigger",
+      "typeVersion": 1,
+      "position": [250, 100],
+      "credentials": {
+        "whatsappBusinessCloudApi": "whatsapp_creds"
+      },
+      "parameters": {
+        "events": ["messages"],
+        "phoneNumberId": "={{ env.PHONE_NUMBER_ID }}",
+        "businessAccountId": "={{ env.BUSINESS_ACCOUNT_ID }}"
+      }
+    },
+
+    {
+      "displayName": "Check Message Type",
+      "name": "messageTypeCheck",
+      "type": "n8n-nodes-base.if",
+      "position": [450, 100],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "={{ $json.entry[0].changes[0].value.messages[0].type }}",
+            "operator": "equals",
+            "rightValue": "document"
+          }
+        },
+        "looseType": false
+      }
+    },
+
+    {
+      "displayName": "Extract Message Data",
+      "name": "extractData",
+      "type": "n8n-nodes-base.set",
+      "position": [650, 100],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "customerPhone",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].from }}"
+            },
+            {
+              "name": "messageType",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].type }}"
+            },
+            {
+              "name": "mediaId",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].document.id }}"
+            },
+            {
+              "name": "fileName",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].document.filename }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ Date.now() }}"
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "displayName": "Download PDF from WhatsApp",
+      "name": "downloadPDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [850, 100],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.instagram.com/v18.0/{{ $json.mediaId }}",
+        "authentication": "genericCredentialType",
+        "genericCredentials": {
+          "authenticationType": "bearerToken",
+          "bearerToken": "={{ $env.WHATSAPP_API_TOKEN }}"
+        },
+        "binaryData": true,
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $env.WHATSAPP_API_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "displayName": "Create Customer Folder",
+      "name": "createCustomerFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1050, 100],
+      "parameters": {
+        "operation": "createFolder",
+        "parentId": "={{ $env.MAIN_CLIENTS_FOLDER_ID }}",
+        "name": "={{ $json.customerPhone }}"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Create Requests Subfolder",
+      "name": "createRequestsFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1250, 100],
+      "parameters": {
+        "operation": "createFolder",
+        "parentId": "={{ $json.id }}",
+        "name": "requests"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Create Results Subfolder",
+      "name": "createResultsFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1450, 100],
+      "parameters": {
+        "operation": "createFolder",
+        "parentId": "={{ $json.id }}",
+        "name": "results"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Upload PDF to Requests",
+      "name": "uploadPDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1650, 100],
+      "parameters": {
+        "operation": "upload",
+        "parentId": "={{ $items('createRequestsFolder')[0].json.id }}",
+        "name": "={{ $json.fileName }}_{{ $json.timestamp }}",
+        "binaryData": true,
+        "binaryDataAttributeName": "data"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Save to Tracking Sheet",
+      "name": "saveToSheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1850, 100],
+      "parameters": {
+        "operation": "append",
+        "spreadsheetId": "={{ $env.TRACKING_SHEET_ID }}",
+        "range": "Requests",
+        "values": [
+          [
+            "={{ $json.customerPhone }}",
+            "Customer",
+            "={{ $json.fileName }}",
+            "={{ $json.timestamp }}",
+            "awaiting_payment",
+            "pending_admin_approval"
+          ]
+        ]
+      },
+      "credentials": {
+        "googleApi": "google_sheets_creds"
+      }
+    },
+
+    {
+      "displayName": "Send Payment Request",
+      "name": "sendPaymentRequest",
+      "type": "n8n-nodes-base.whatsapp",
+      "position": [2050, 100],
+      "parameters": {
+        "operation": "sendMessage",
+        "phoneNumber": "={{ $json.customerPhone }}",
+        "message": "📋 تم استقبال ملفك: {{ $json.fileName }}\n\n💳 الآن برجاء تأكيد الدفع:\n\n✅ طرق الدفع:\n1️⃣ Visa/Mastercard\n2️⃣ التحويل البنكي\n3️⃣ كاش عند التسليم\n\n📸 برجاء إرسال screenshot الدفع\n\n💰 السعر: 500 ج.م"
+      },
+      "credentials": {
+        "whatsappBusinessCloudApi": "whatsapp_creds"
+      }
+    },
+
+    {
+      "displayName": "Check if Image (Payment)",
+      "name": "checkIfImage",
+      "type": "n8n-nodes-base.if",
+      "position": [450, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "={{ $json.entry[0].changes[0].value.messages[0].type }}",
+            "operator": "equals",
+            "rightValue": "image"
+          }
+        }
+      }
+    },
+
+    {
+      "displayName": "Extract Payment Screenshot Data",
+      "name": "extractPaymentData",
+      "type": "n8n-nodes-base.set",
+      "position": [650, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "customerPhone",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].from }}"
+            },
+            {
+              "name": "imageId",
+              "value": "={{ $json.entry[0].changes[0].value.messages[0].image.id }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ Date.now() }}"
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "displayName": "Download Payment Screenshot",
+      "name": "downloadScreenshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [850, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.instagram.com/v18.0/{{ $json.imageId }}",
+        "authentication": "genericCredentialType",
+        "genericCredentials": {
+          "authenticationType": "bearerToken",
+          "bearerToken": "={{ $env.WHATSAPP_API_TOKEN }}"
+        },
+        "binaryData": true,
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "={{ $env.WHATSAPP_API_TOKEN }}"
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "displayName": "Find Customer Folder",
+      "name": "findCustomerFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1050, 300],
+      "parameters": {
+        "operation": "list",
+        "parentId": "={{ $env.MAIN_CLIENTS_FOLDER_ID }}",
+        "searchQuery": "name contains '{{ $json.customerPhone }}'",
+        "maxResults": 1
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Create Payments Folder",
+      "name": "createPaymentsFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1250, 300],
+      "parameters": {
+        "operation": "createFolder",
+        "parentId": "={{ $json[0].id }}",
+        "name": "payments"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Upload Payment Screenshot",
+      "name": "uploadScreenshot",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1450, 300],
+      "parameters": {
+        "operation": "upload",
+        "parentId": "={{ $json.id }}",
+        "name": "payment_screenshot_{{ $json.timestamp }}.jpg",
+        "binaryData": true,
+        "binaryDataAttributeName": "data"
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Update Payment Sheet",
+      "name": "updatePaymentSheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1650, 300],
+      "parameters": {
+        "operation": "append",
+        "spreadsheetId": "={{ $env.TRACKING_SHEET_ID }}",
+        "range": "Payments",
+        "values": [
+          [
+            "={{ $json.customerPhone }}",
+            "screenshot",
+            "={{ $json.timestamp }}",
+            "pending_admin_approval"
+          ]
+        ]
+      },
+      "credentials": {
+        "googleApi": "google_sheets_creds"
+      }
+    },
+
+    {
+      "displayName": "Confirm Payment Received",
+      "name": "confirmPayment",
+      "type": "n8n-nodes-base.whatsapp",
+      "position": [1850, 300],
+      "parameters": {
+        "operation": "sendMessage",
+        "phoneNumber": "={{ $json.customerPhone }}",
+        "message": "✅ تم استقبال screenshot الدفع\n\n⏳ جاري التحقق من الدفع من قبل الفريق\n📌 سيتم إرسال الملف المترجم فور التحقق"
+      },
+      "credentials": {
+        "whatsappBusinessCloudApi": "whatsapp_creds"
+      }
+    },
+
+    {
+      "displayName": "Cron - Check Every Hour",
+      "name": "cronJob",
+      "type": "n8n-nodes-base.cron",
+      "position": [250, 500],
+      "parameters": {
+        "interval": [1],
+        "unit": "hours"
+      }
+    },
+
+    {
+      "displayName": "Get Approved Requests",
+      "name": "getApprovedRequests",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [450, 500],
+      "parameters": {
+        "operation": "read",
+        "spreadsheetId": "={{ $env.TRACKING_SHEET_ID }}",
+        "range": "Requests",
+        "hasHeaders": true
+      },
+      "credentials": {
+        "googleApi": "google_sheets_creds"
+      }
+    },
+
+    {
+      "displayName": "Filter Paid Status",
+      "name": "filterPaid",
+      "type": "n8n-nodes-base.function",
+      "position": [650, 500],
+      "parameters": {
+        "functionCode": "return $json.filter(row => row[4] === 'paid').map(row => ({\n  phone: row[0],\n  fileName: row[2]\n}));"
+      }
+    },
+
+    {
+      "displayName": "Loop Each Approved",
+      "name": "loopApproved",
+      "type": "n8n-nodes-base.loop",
+      "position": [850, 500],
+      "parameters": {
+        "times": "={{ $json.length }}"
+      }
+    },
+
+    {
+      "displayName": "Find Results Folder",
+      "name": "findResultsFolder",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1050, 500],
+      "parameters": {
+        "operation": "list",
+        "parentId": "={{ $env.MAIN_CLIENTS_FOLDER_ID }}",
+        "searchQuery": "name contains '{{ $json.phone }}'",
+        "maxResults": 1
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "List PDFs in Results",
+      "name": "listPDFs",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1250, 500],
+      "parameters": {
+        "operation": "list",
+        "parentId": "={{ $json[0].id }}/results",
+        "searchQuery": "name contains 'pdf'",
+        "maxResults": 1
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Check if Files Exist",
+      "name": "checkFilesExist",
+      "type": "n8n-nodes-base.if",
+      "position": [1450, 500],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "={{ $json.length }}",
+            "operator": "greaterThan",
+            "rightValue": "0"
+          }
+        }
+      }
+    },
+
+    {
+      "displayName": "Download PDF Result",
+      "name": "downloadResult",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [1650, 500],
+      "parameters": {
+        "operation": "download",
+        "fileId": "={{ $json[0].id }}",
+        "binaryData": true
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    },
+
+    {
+      "displayName": "Send PDF to Customer",
+      "name": "sendPDF",
+      "type": "n8n-nodes-base.whatsapp",
+      "position": [1850, 500],
+      "parameters": {
+        "operation": "sendMessage",
+        "phoneNumber": "={{ $json.phone }}",
+        "message": "📄 الملف المترجم جاهز! ✅\n\n📋 {{ $json[0].name }}\n\nشكراً لاستخدامك خدمتنا 🙏"
+      },
+      "credentials": {
+        "whatsappBusinessCloudApi": "whatsapp_creds"
+      }
+    },
+
+    {
+      "displayName": "Log as Sent",
+      "name": "logSent",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [2050, 500],
+      "parameters": {
+        "operation": "append",
+        "spreadsheetId": "={{ $env.TRACKING_SHEET_ID }}",
+        "range": "Sent",
+        "values": [
+          [
+            "={{ $json.phone }}",
+            "={{ $json[0].name }}",
+            "={{ Date.now() }}",
+            "sent"
+          ]
+        ]
+      },
+      "credentials": {
+        "googleApi": "google_sheets_creds"
+      }
+    },
+
+    {
+      "displayName": "Archive Sent File",
+      "name": "archiveFile",
+      "type": "n8n-nodes-base.googleDrive",
+      "position": [2250, 500],
+      "parameters": {
+        "operation": "update",
+        "fileId": "={{ $json[0].id }}",
+        "trashed": true
+      },
+      "credentials": {
+        "googleApi": "google_drive_creds"
+      }
+    }
+  ],
+
+  "connections": {
+    "whatsappTrigger": {
+      "main": [
+        [
+          {
+            "node": "messageTypeCheck",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "messageTypeCheck": {
+      "main": [
+        [
+          {
+            "node": "extractData",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "checkIfImage",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extractData": {
+      "main": [
+        [
+          {
+            "node": "downloadPDF",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "downloadPDF": {
+      "main": [
+        [
+          {
+            "node": "createCustomerFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "createCustomerFolder": {
+      "main": [
+        [
+          {
+            "node": "createRequestsFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "createRequestsFolder": {
+      "main": [
+        [
+          {
+            "node": "createResultsFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "createResultsFolder": {
+      "main": [
+        [
+          {
+            "node": "uploadPDF",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "uploadPDF": {
+      "main": [
+        [
+          {
+            "node": "saveToSheet",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "saveToSheet": {
+      "main": [
+        [
+          {
+            "node": "sendPaymentRequest",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "checkIfImage": {
+      "main": [
+        [
+          {
+            "node": "extractPaymentData",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "extractPaymentData": {
+      "main": [
+        [
+          {
+            "node": "downloadScreenshot",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "downloadScreenshot": {
+      "main": [
+        [
+          {
+            "node": "findCustomerFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "findCustomerFolder": {
+      "main": [
+        [
+          {
+            "node": "createPaymentsFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "createPaymentsFolder": {
+      "main": [
+        [
+          {
+            "node": "uploadScreenshot",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "uploadScreenshot": {
+      "main": [
+        [
+          {
+            "node": "updatePaymentSheet",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "updatePaymentSheet": {
+      "main": [
+        [
+          {
+            "node": "confirmPayment",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cronJob": {
+      "main": [
+        [
+          {
+            "node": "getApprovedRequests",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getApprovedRequests": {
+      "main": [
+        [
+          {
+            "node": "filterPaid",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filterPaid": {
+      "main": [
+        [
+          {
+            "node": "loopApproved",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loopApproved": {
+      "main": [
+        [
+          {
+            "node": "findResultsFolder",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "findResultsFolder": {
+      "main": [
+        [
+          {
+            "node": "listPDFs",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "listPDFs": {
+      "main": [
+        [
+          {
+            "node": "checkFilesExist",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "checkFilesExist": {
+      "main": [
+        [
+          {
+            "node": "downloadResult",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "downloadResult": {
+      "main": [
+        [
+          {
+            "node": "sendPDF",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "sendPDF": {
+      "main": [
+        [
+          {
+            "node": "logSent",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "logSent": {
+      "main": [
+        [
+          {
+            "node": "archiveFile",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
